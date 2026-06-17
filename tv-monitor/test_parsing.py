@@ -1,0 +1,51 @@
+"""
+Verifica que _parse_price, _parse_cuotas y _tv_size_match funcionan
+con HTML simulado — sin necesitar red.
+"""
+from scrapers import _parse_price, _parse_cuotas, _tv_size_match
+
+cases_price = [
+    ('$ 999.999', 999999),
+    ('$1.200.000', 1200000),
+    ('1.050.000', 1050000),
+    ('$ 849,999', 849999),
+]
+cases_cuotas = [
+    ('12 cuotas sin interés', 12),
+    ('6 Cuotas Sin Interés', 6),
+    ('3 cuotas sin interés', 3),
+    ('Hasta 18 cuotas sin intereses', 18),
+    ('Precio contado', None),
+]
+cases_size = [
+    ('Samsung Smart TV 65" 4K QLED', 60, 65, True),
+    ('LG OLED 55 pulgadas', 55, 65, True),
+    ('Sony Bravia 75" 8K', 70, 999, True),
+    ('Noblex 32" HD', 60, 65, False),
+    ('TCL Smart TV 4K 70 pulgadas', 70, 999, True),
+]
+
+ok = True
+for text, expected in cases_price:
+    result = _parse_price(text)
+    status = "✓" if result == expected else "✗"
+    if result != expected:
+        ok = False
+    print(f"  {status} _parse_price({text!r}) = {result}  (esperado {expected})")
+
+for text, expected in cases_cuotas:
+    result = _parse_cuotas(text)
+    status = "✓" if result == expected else "✗"
+    if result != expected:
+        ok = False
+    print(f"  {status} _parse_cuotas({text!r}) = {result}  (esperado {expected})")
+
+for name, lo, hi, expected in cases_size:
+    result = _tv_size_match(name, lo, hi)
+    status = "✓" if result == expected else "✗"
+    if result != expected:
+        ok = False
+    print(f"  {status} _tv_size_match({name!r}, {lo}, {hi}) = {result}")
+
+print()
+print("RESULTADO:", "TODOS OK" if ok else "HAY FALLAS")

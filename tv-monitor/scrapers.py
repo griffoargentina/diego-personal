@@ -82,6 +82,21 @@ def _tv_size_match(name: str, min_inches: int, max_inches: int) -> bool:
     return False
 
 
+_PW_FALLBACK_PATHS = [
+    "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
+    "/opt/pw-browsers/chromium/chrome-linux/chrome",
+]
+
+
+def _pw_executable() -> str | None:
+    """Return a usable Chromium executable path, or None to let Playwright use its default."""
+    import shutil
+    for path in _PW_FALLBACK_PATHS:
+        if shutil.os.path.isfile(path):
+            return path
+    return None
+
+
 def _pw_get_html(url: str, wait_selector: str, timeout_ms: int = 20_000) -> str | None:
     """
     Load *url* in a headless Chromium browser, wait until *wait_selector*
@@ -94,9 +109,14 @@ def _pw_get_html(url: str, wait_selector: str, timeout_ms: int = 20_000) -> str 
         logger.error("playwright not installed — run: pip install playwright && playwright install chromium")
         return None
 
+    launch_kwargs: dict = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
+    exe = _pw_executable()
+    if exe:
+        launch_kwargs["executable_path"] = exe
+
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+            browser = pw.chromium.launch(**launch_kwargs)
             ctx = browser.new_context(
                 user_agent=random.choice(USER_AGENTS),
                 locale="es-AR",
@@ -125,11 +145,8 @@ def scrape_mercadolibre(brands: list[str], min_inches: int, max_inches: int) -> 
     results = []
     session = _session()
     for brand in brands:
-        query = f"smart tv {brand} {min_inches} pulgadas"
-        url = (
-            f"https://listado.mercadolibre.com.ar/{requests.utils.quote(query)}"
-            "_Desde_1_NoIndex_True"
-        )
+        slug = f"smart-tv-{brand}-{min_inches}-pulgadas".lower().replace(" ", "-")
+        url = f"https://listado.mercadolibre.com.ar/{slug}_Desde_1_NoIndex_True"
         r = _get(session, url)
         if not r:
             continue
@@ -170,6 +187,12 @@ def scrape_mercadolibre(brands: list[str], min_inches: int, max_inches: int) -> 
 def scrape_fravega(brands: list[str], min_inches: int, max_inches: int) -> list[dict]:
     results = []
     session = _session()
+    session.headers.update({
+        "Referer": "https://www.fravega.com/",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "same-origin",
+    })
     for brand in brands:
         url = (
             f"https://www.fravega.com/l/?keyword=smart+tv+{brand}"
