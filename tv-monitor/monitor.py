@@ -123,13 +123,24 @@ def run() -> None:
             new_history[key] = val
     save_history(new_history)
 
+    dry_run = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
+
     if all_alerts:
-        logger.info("Sending email with %d alerts to %s", len(all_alerts), ALERT_EMAIL)
-        try:
-            send_alert(ALERT_EMAIL, all_alerts)
-        except Exception as e:
-            logger.error("Failed to send email: %s", e)
-            sys.exit(1)
+        if dry_run:
+            logger.info("DRY RUN — %d alert(s) que se enviarían a %s:", len(all_alerts), ALERT_EMAIL)
+            for a in all_alerts:
+                cuotas_str = f"  {a['cuotas']} cuotas s/i" if a.get("cuotas") else ""
+                logger.info(
+                    "  [%s] $%s%s — %s — %s",
+                    a["site"], f"{a['price']:,}", cuotas_str, a["name"][:60], a["url"],
+                )
+        else:
+            logger.info("Sending email with %d alerts to %s", len(all_alerts), ALERT_EMAIL)
+            try:
+                send_alert(ALERT_EMAIL, all_alerts)
+            except Exception as e:
+                logger.error("Failed to send email: %s", e)
+                sys.exit(1)
     else:
         logger.info("No new alerts this run.")
 
