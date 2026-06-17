@@ -1,8 +1,8 @@
 """
-Verifica que _parse_price, _parse_cuotas y _tv_size_match funcionan
-con HTML simulado — sin necesitar red.
+Verifica que _parse_price, _parse_cuotas y _matches funcionan correctamente.
+Sin necesitar red.
 """
-from scrapers import _parse_price, _parse_cuotas, _tv_size_match
+from scrapers import _parse_price, _parse_cuotas, _matches
 
 cases_price = [
     ('$ 999.999', 999999),
@@ -17,12 +17,19 @@ cases_cuotas = [
     ('Hasta 18 cuotas sin intereses', 18),
     ('Precio contado', None),
 ]
-cases_size = [
-    ('Samsung Smart TV 65" 4K QLED', 60, 65, True),
-    ('LG OLED 55 pulgadas', 55, 65, True),
-    ('Sony Bravia 75" 8K', 70, 999, True),
-    ('Noblex 32" HD', 60, 65, False),
-    ('TCL Smart TV 4K 70 pulgadas', 70, 999, True),
+cases_matches = [
+    # TVs — filtro por pulgadas
+    ('Samsung Smart TV 65" 4K QLED', [], (60, 65), True),
+    ('LG OLED 55 pulgadas', [], (55, 65), True),
+    ('Sony Bravia 75" 8K', [], (70, 999), True),
+    ('Noblex 32" HD', [], (60, 65), False),
+    ('TCL Smart TV 4K 70 pulgadas', [], (70, 999), True),
+    ('Samsung Smart TV 70" 4K', [], (60, 65), False),
+    # Aspiradoras — filtro por keywords
+    ('Aspiradora Robot Gadnic AC701 Negro', ['gadnic', 'ac701'], None, True),
+    ('Aspiradora Robot Gadnic AC501', ['gadnic', 'ac701'], None, False),
+    ('Robot Limpia Vidrios Automatic', ['vidrio'], None, True),
+    ('Aspiradora Robot Xiaomi S10', ['gadnic', 'ac701'], None, False),
 ]
 
 ok = True
@@ -40,12 +47,12 @@ for text, expected in cases_cuotas:
         ok = False
     print(f"  {status} _parse_cuotas({text!r}) = {result}  (esperado {expected})")
 
-for name, lo, hi, expected in cases_size:
-    result = _tv_size_match(name, lo, hi)
+for name, kws, sr, expected in cases_matches:
+    result = _matches(name, kws, sr)
     status = "✓" if result == expected else "✗"
     if result != expected:
         ok = False
-    print(f"  {status} _tv_size_match({name!r}, {lo}, {hi}) = {result}")
+    print(f"  {status} _matches({name!r}, kws={kws}, size={sr}) = {result}")
 
 print()
 print("RESULTADO:", "TODOS OK" if ok else "HAY FALLAS")
