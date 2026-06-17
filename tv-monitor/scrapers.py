@@ -8,6 +8,9 @@ Each scraper returns a list of dicts:
     "cuotas": int | None,   # cuotas sin interés detectadas
     "url": str,
   }
+
+MercadoLibre and Fravega use requests + BeautifulSoup (SSR pages).
+Garbarino, Musimundo, and Ribeiro use Playwright (heavy JS / React SPAs).
 """
 
 import logging
@@ -29,6 +32,10 @@ USER_AGENTS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
 def _session():
     s = requests.Session()
     s.headers.update(
@@ -42,7 +49,7 @@ def _session():
 
 
 def _get(session, url, **kwargs):
-    """GET with retry and polite delay."""
+    """GET with polite delay."""
     time.sleep(random.uniform(1.5, 3.5))
     try:
         r = session.get(url, timeout=20, **kwargs)
@@ -65,8 +72,53 @@ def _parse_cuotas(text: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _tv_size_match(name: str, min_inches: int, max_inches: int) -> bool:
+    """Return True if the product name contains a size within [min_inches, max_inches]."""
+    matches = re.findall(r'(\d{2})"?(?:\s*pulgadas?)?', name, re.IGNORECASE)
+    for m in matches:
+        size = int(m)
+        if min_inches <= size <= max_inches:
+            return True
+    return False
+
+
+def _pw_get_html(url: str, wait_selector: str, timeout_ms: int = 20_000) -> str | None:
+    """
+    Load *url* in a headless Chromium browser, wait until *wait_selector*
+    appears, then return the full page HTML.
+    Returns None on error (caller should log and skip).
+    """
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    except ImportError:
+        logger.error("playwright not installed — run: pip install playwright && playwright install chromium")
+        return None
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
+            ctx = browser.new_context(
+                user_agent=random.choice(USER_AGENTS),
+                locale="es-AR",
+                extra_http_headers={"Accept-Language": "es-AR,es;q=0.9"},
+            )
+            page = ctx.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            try:
+                page.wait_for_selector(wait_selector, timeout=timeout_ms)
+            except PWTimeout:
+                logger.warning("Selector '%s' never appeared on %s", wait_selector, url)
+            time.sleep(random.uniform(1.0, 2.5))  # let lazy-loaded items render
+            html = page.content()
+            browser.close()
+            return html
+    except Exception as e:
+        logger.warning("Playwright failed for %s: %s", url, e)
+        return None
+
+
 # ---------------------------------------------------------------------------
-# MercadoLibre
+# MercadoLibre  (requests)
 # ---------------------------------------------------------------------------
 
 def scrape_mercadolibre(brands: list[str], min_inches: int, max_inches: int) -> list[dict]:
@@ -76,14 +128,13 @@ def scrape_mercadolibre(brands: list[str], min_inches: int, max_inches: int) -> 
         query = f"smart tv {brand} {min_inches} pulgadas"
         url = (
             f"https://listado.mercadolibre.com.ar/{requests.utils.quote(query)}"
-            f"_Desde_1_NoIndex_True"
+            "_Desde_1_NoIndex_True"
         )
         r = _get(session, url)
         if not r:
             continue
         soup = BeautifulSoup(r.text, "html.parser")
-        items = soup.select("li.ui-search-layout__item")
-        for item in items[:20]:
+        for item in soup.select("li.ui-search-layout__item")[:20]:
             try:
                 name_el = item.select_one(".poly-component__title")
                 price_el = item.select_one(".andes-money-amount__fraction")
@@ -91,13 +142,11 @@ def scrape_mercadolibre(brands: list[str], min_inches: int, max_inches: int) -> 
                 if not (name_el and price_el and link_el):
                     continue
                 name = name_el.get_text(strip=True)
-                # Only process items that look like TVs within size range
                 if not _tv_size_match(name, min_inches, max_inches):
                     continue
                 price = _parse_price(price_el.get_text())
                 if not price:
                     continue
-                # Cuotas: look for installments text in the card
                 cuotas_el = item.select_one(".poly-price__installments")
                 cuotas = _parse_cuotas(cuotas_el.get_text()) if cuotas_el else None
                 results.append(
@@ -115,7 +164,7 @@ def scrape_mercadolibre(brands: list[str], min_inches: int, max_inches: int) -> 
 
 
 # ---------------------------------------------------------------------------
-# Fravega
+# Fravega  (requests — SSR)
 # ---------------------------------------------------------------------------
 
 def scrape_fravega(brands: list[str], min_inches: int, max_inches: int) -> list[dict]:
@@ -124,14 +173,13 @@ def scrape_fravega(brands: list[str], min_inches: int, max_inches: int) -> list[
     for brand in brands:
         url = (
             f"https://www.fravega.com/l/?keyword=smart+tv+{brand}"
-            f"&facets=categoria%3Atelevisores"
+            "&facets=categoria%3Atelevisores"
         )
         r = _get(session, url)
         if not r:
             continue
         soup = BeautifulSoup(r.text, "html.parser")
-        items = soup.select("article[data-test-id='product-card']")
-        for item in items[:20]:
+        for item in soup.select("article[data-test-id='product-card']")[:20]:
             try:
                 name_el = item.select_one("[data-test-id='product-title']")
                 price_el = item.select_one("[data-test-id='product-price']")
@@ -157,23 +205,28 @@ def scrape_fravega(brands: list[str], min_inches: int, max_inches: int) -> list[
 
 
 # ---------------------------------------------------------------------------
-# Garbarino
+# Garbarino  (Playwright — React SPA)
 # ---------------------------------------------------------------------------
 
 def scrape_garbarino(brands: list[str], min_inches: int, max_inches: int) -> list[dict]:
     results = []
-    session = _session()
     for brand in brands:
         url = f"https://www.garbarino.com/search?q=smart+tv+{brand}&category=televisores"
-        r = _get(session, url)
-        if not r:
+        html = _pw_get_html(url, wait_selector="[class*='ProductCard'],[class*='product-card']")
+        if not html:
             continue
-        soup = BeautifulSoup(r.text, "html.parser")
-        items = soup.select(".product-card, [class*='ProductCard']")
+        soup = BeautifulSoup(html, "html.parser")
+        items = soup.select("[class*='ProductCard'],[class*='product-card']")
         for item in items[:20]:
             try:
-                name_el = item.select_one("[class*='product-title'], [class*='ProductTitle'], h2, h3")
-                price_el = item.select_one("[class*='price']:not([class*='old'])")
+                name_el = item.select_one(
+                    "[class*='ProductTitle'],[class*='product-title'],[class*='ProductName'],h2,h3"
+                )
+                # Exclude old/crossed-out prices
+                price_el = item.select_one(
+                    "[class*='CurrentPrice'],[class*='current-price'],"
+                    "[class*='PriceCurrent'],[class*='price-current']"
+                ) or item.select_one("[class*='Price']:not([class*='Old']):not([class*='old'])")
                 link_el = item.select_one("a[href]")
                 if not (name_el and price_el and link_el):
                     continue
@@ -183,7 +236,9 @@ def scrape_garbarino(brands: list[str], min_inches: int, max_inches: int) -> lis
                 price = _parse_price(price_el.get_text())
                 if not price:
                     continue
-                cuotas_el = item.select_one("[class*='installment'], [class*='cuota']")
+                cuotas_el = item.select_one(
+                    "[class*='Installment'],[class*='installment'],[class*='Cuota'],[class*='cuota']"
+                )
                 cuotas = _parse_cuotas(cuotas_el.get_text()) if cuotas_el else None
                 href = link_el["href"]
                 full_url = href if href.startswith("http") else f"https://www.garbarino.com{href}"
@@ -196,23 +251,27 @@ def scrape_garbarino(brands: list[str], min_inches: int, max_inches: int) -> lis
 
 
 # ---------------------------------------------------------------------------
-# Musimundo
+# Musimundo  (Playwright — React SPA)
 # ---------------------------------------------------------------------------
 
 def scrape_musimundo(brands: list[str], min_inches: int, max_inches: int) -> list[dict]:
     results = []
-    session = _session()
     for brand in brands:
         url = f"https://www.musimundo.com/search?q=smart+tv+{brand}&category=televisores"
-        r = _get(session, url)
-        if not r:
+        html = _pw_get_html(url, wait_selector=".product-item,[class*='ProductItem'],[class*='product-card']")
+        if not html:
             continue
-        soup = BeautifulSoup(r.text, "html.parser")
-        items = soup.select(".product-item, [class*='product-card']")
+        soup = BeautifulSoup(html, "html.parser")
+        items = soup.select(".product-item,[class*='ProductItem'],[class*='product-card']")
         for item in items[:20]:
             try:
-                name_el = item.select_one(".product-name, [class*='title']")
-                price_el = item.select_one(".price, [class*='price']:not([class*='old'])")
+                name_el = item.select_one(
+                    ".product-name,[class*='ProductName'],[class*='product-name'],[class*='Title'],h2,h3"
+                )
+                price_el = item.select_one(
+                    "[class*='CurrentPrice'],[class*='current-price'],"
+                    ".price,[class*='Price']:not([class*='Old']):not([class*='old'])"
+                )
                 link_el = item.select_one("a[href]")
                 if not (name_el and price_el and link_el):
                     continue
@@ -222,7 +281,9 @@ def scrape_musimundo(brands: list[str], min_inches: int, max_inches: int) -> lis
                 price = _parse_price(price_el.get_text())
                 if not price:
                     continue
-                cuotas_el = item.select_one("[class*='installment'], [class*='cuota'], [class*='quota']")
+                cuotas_el = item.select_one(
+                    "[class*='installment'],[class*='Installment'],[class*='cuota'],[class*='quota']"
+                )
                 cuotas = _parse_cuotas(cuotas_el.get_text()) if cuotas_el else None
                 href = link_el["href"]
                 full_url = href if href.startswith("http") else f"https://www.musimundo.com{href}"
@@ -235,23 +296,27 @@ def scrape_musimundo(brands: list[str], min_inches: int, max_inches: int) -> lis
 
 
 # ---------------------------------------------------------------------------
-# Ribeiro
+# Ribeiro  (Playwright — React SPA)
 # ---------------------------------------------------------------------------
 
 def scrape_ribeiro(brands: list[str], min_inches: int, max_inches: int) -> list[dict]:
     results = []
-    session = _session()
     for brand in brands:
         url = f"https://www.ribeiro.com.ar/search?q=smart+tv+{brand}&category=televisores"
-        r = _get(session, url)
-        if not r:
+        html = _pw_get_html(url, wait_selector=".product-item,[class*='ProductItem'],[class*='product-card']")
+        if not html:
             continue
-        soup = BeautifulSoup(r.text, "html.parser")
-        items = soup.select(".product-item, [class*='product']")
+        soup = BeautifulSoup(html, "html.parser")
+        items = soup.select(".product-item,[class*='ProductItem'],[class*='product-card']")
         for item in items[:20]:
             try:
-                name_el = item.select_one(".product-name, [class*='title'], h2, h3")
-                price_el = item.select_one(".price, [class*='price']:not([class*='old'])")
+                name_el = item.select_one(
+                    ".product-name,[class*='ProductName'],[class*='product-name'],h2,h3"
+                )
+                price_el = item.select_one(
+                    "[class*='CurrentPrice'],[class*='current-price'],"
+                    ".price,[class*='Price']:not([class*='Old']):not([class*='old'])"
+                )
                 link_el = item.select_one("a[href]")
                 if not (name_el and price_el and link_el):
                     continue
@@ -261,7 +326,9 @@ def scrape_ribeiro(brands: list[str], min_inches: int, max_inches: int) -> list[
                 price = _parse_price(price_el.get_text())
                 if not price:
                     continue
-                cuotas_el = item.select_one("[class*='installment'], [class*='cuota']")
+                cuotas_el = item.select_one(
+                    "[class*='installment'],[class*='Installment'],[class*='cuota']"
+                )
                 cuotas = _parse_cuotas(cuotas_el.get_text()) if cuotas_el else None
                 href = link_el["href"]
                 full_url = href if href.startswith("http") else f"https://www.ribeiro.com.ar{href}"
@@ -274,18 +341,8 @@ def scrape_ribeiro(brands: list[str], min_inches: int, max_inches: int) -> list[
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Registry
 # ---------------------------------------------------------------------------
-
-def _tv_size_match(name: str, min_inches: int, max_inches: int) -> bool:
-    """Return True if the product name mentions a size within [min_inches, max_inches]."""
-    matches = re.findall(r'(\d{2})"?(?:\s*pulgadas?)?', name, re.IGNORECASE)
-    for m in matches:
-        size = int(m)
-        if min_inches <= size <= max_inches:
-            return True
-    return False
-
 
 SCRAPER_MAP = {
     "mercadolibre": scrape_mercadolibre,
