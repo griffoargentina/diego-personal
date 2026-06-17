@@ -1,0 +1,42 @@
+name: TV Price Monitor
+
+on:
+  schedule:
+    # Every 6 hours: 00:00, 06:00, 12:00, 18:00 UTC (= 21, 03, 09, 15 ART)
+    - cron: "0 0,6,12,18 * * *"
+  workflow_dispatch: # allow manual trigger from GitHub UI
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # needed to commit price_history.json
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tv-monitor/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r tv-monitor/requirements.txt
+
+      - name: Run monitor
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        working-directory: tv-monitor
+        run: python monitor.py
+
+      - name: Commit updated price history
+        run: |
+          git config user.name  "tv-monitor[bot]"
+          git config user.email "tv-monitor@users.noreply.github.com"
+          git add tv-monitor/price_history.json || true
+          git diff --cached --quiet || git commit -m "chore: update price history [skip ci]"
+          git push
