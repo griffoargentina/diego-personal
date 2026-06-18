@@ -339,7 +339,7 @@ def scrape_gadnic(query: str, keywords: list[str], size_range: tuple | None) -> 
     results = []
     session = _session()
     encoded = requests.utils.quote(query)
-    url = f"https://gadnic.com.ar/search?q={encoded}&type=product"
+    url = f"https://www.gadnic.com.ar/search?type=product&q={encoded}"
     r = _get(session, url)
     if not r:
         return results
