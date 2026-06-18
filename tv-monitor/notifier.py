@@ -1,23 +1,18 @@
-"""Send alert emails via Gmail SMTP."""
+"""Send alert emails via Resend API."""
 
 import logging
 import os
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+
+import requests
 
 logger = logging.getLogger(__name__)
 
+RESEND_FROM = "Monitor de Precios <onboarding@resend.dev>"
+
 
 def send_alert(recipient: str, alerts: list[dict]) -> None:
-    """
-    alerts: list of dicts with keys:
-      site, name, price, cuotas, url, reason (list of str)
-    """
-    gmail_user = os.environ["GMAIL_USER"]
-    gmail_password = os.environ["GMAIL_APP_PASSWORD"]
-
-    subject = f"[TV Monitor] {len(alerts)} oferta(s) detectada(s)"
+    api_key = os.environ["RESEND_API_KEY"]
+    subject = f"[Price Monitor] {len(alerts)} oferta(s) detectada(s)"
 
     html_rows = ""
     for a in alerts:
@@ -34,7 +29,7 @@ def send_alert(recipient: str, alerts: list[dict]) -> None:
 
     html = f"""
     <html><body style="font-family:Arial,sans-serif;font-size:14px">
-      <h2 style="color:#1a1a2e">📺 TV Monitor — Ofertas detectadas</h2>
+      <h2 style="color:#1a1a2e">Price Monitor — Ofertas detectadas</h2>
       <table style="border-collapse:collapse;width:100%">
         <thead style="background:#1a1a2e;color:white">
           <tr>
@@ -48,18 +43,16 @@ def send_alert(recipient: str, alerts: list[dict]) -> None:
         <tbody>{html_rows}</tbody>
       </table>
       <p style="color:#888;font-size:12px;margin-top:20px">
-        Generado automáticamente por TV Monitor · griffoargentina/diego-personal
+        Generado automáticamente · griffoargentina/diego-personal
       </p>
     </body></html>"""
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = gmail_user
-    msg["To"] = recipient
-    msg.attach(MIMEText(html, "html"))
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(gmail_user, gmail_password)
-        server.sendmail(gmail_user, recipient, msg.as_string())
-
-    logger.info("Alert email sent to %s (%d items)", recipient, len(alerts))
+    response = requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={"from": RESEND_FROM, "to": [recipient], "subject": subject, "html": html},
+        timeout=15,
+    )
+    response.raise_for_status()
+    logger.info("Alert sent via Resend to %s (%d items) — id: %s",
+                recipient, len(alerts), response.json().get("id"))
