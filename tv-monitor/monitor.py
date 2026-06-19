@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config import ALERT_EMAIL, PRICE_HISTORY_FILE, TARGETS
-from notifier import send_alert
+from notifier import send_report
 from scrapers import SCRAPER_MAP
 
 logging.basicConfig(
@@ -59,6 +59,7 @@ def run() -> None:
     now_iso = datetime.now(timezone.utc).isoformat()
 
     all_alerts: list[dict] = []
+    scan_summary: list[dict] = []
     new_history: dict = {}
 
     for target in TARGETS:
@@ -69,6 +70,7 @@ def run() -> None:
             ", ".join(target["sites"]),
         )
 
+        target_total = 0
         for site_key in target["sites"]:
             scraper = SCRAPER_MAP.get(site_key)
             if not scraper:
@@ -84,6 +86,7 @@ def run() -> None:
                     continue
 
                 logger.info("  → %d products found", len(items))
+                target_total += len(items)
 
                 for item in items:
                     reasons = []
@@ -118,6 +121,13 @@ def run() -> None:
                         item["name"][:60], item["price"], ", ".join(reasons),
                     )
 
+        scan_summary.append({
+            "label": target["label"],
+            "sites": target["sites"],
+            "max_price": target["max_price"],
+            "total_found": target_total,
+        })
+
     # Keep history for items not seen this run (dedup across runs)
     for key, val in history.items():
         if key not in new_history:
@@ -126,24 +136,18 @@ def run() -> None:
 
     dry_run = os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes")
 
-    if all_alerts:
-        if dry_run:
-            logger.info("DRY RUN — %d alert(s) que se enviarían a %s:", len(all_alerts), ALERT_EMAIL)
-            for a in all_alerts:
-                cuotas_str = f"  {a['cuotas']} cuotas s/i" if a.get("cuotas") else ""
-                logger.info(
-                    "  [%s] $%s%s — %s — %s",
-                    a["site"], f"{a['price']:,}", cuotas_str, a["name"][:60], a["url"],
-                )
-        else:
-            logger.info("Sending email with %d alerts to %s", len(all_alerts), ALERT_EMAIL)
-            try:
-                send_alert(ALERT_EMAIL, all_alerts)
-            except Exception as e:
-                logger.error("Failed to send email: %s", e)
-                sys.exit(1)
+    if dry_run:
+        logger.info("DRY RUN — %d alert(s), no email sent", len(all_alerts))
+        for a in all_alerts:
+            cuotas_str = f"  {a['cuotas']} cuotas s/i" if a.get("cuotas") else ""
+            logger.info("  [%s] $%s%s — %s", a["site"], f"{a['price']:,}", cuotas_str, a["name"][:60])
     else:
-        logger.info("No new alerts this run.")
+        logger.info("Sending report to %s (%d alerts)", ALERT_EMAIL, len(all_alerts))
+        try:
+            send_report(ALERT_EMAIL, all_alerts, scan_summary)
+        except Exception as e:
+            logger.error("Failed to send email: %s", e)
+            sys.exit(1)
 
 
 if __name__ == "__main__":
