@@ -36,6 +36,7 @@ jobs:
       - name: Run monitor
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          NTFY_TOPIC: griffo-price-monitor
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
         working-directory: tv-monitor
         run: python monitor.py
